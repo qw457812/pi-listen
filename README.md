@@ -278,6 +278,7 @@ Run `/voice test` inside Pi for full diagnostics.
 | Space doesn't activate voice | Run `/voice-settings` — voice may be disabled |
 | Local model not transcribing | Check `/voice-settings` → Device tab for sherpa-onnx status |
 | Download failed | Partial downloads auto-resume on retry. Check disk space in Device tab. |
+| `dyld: Library not loaded: libsimdjson` on macOS | Homebrew Node ABI mismatch — run `brew reinstall node` or switch to version-managed Node (`mise`, `fnm`, `nvm`) |
 
 ---
 
