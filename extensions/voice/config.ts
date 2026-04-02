@@ -37,6 +37,8 @@ export interface VoiceConfig {
 	localModel?: string;
 	/** Local transcription server URL (default: http://localhost:8080) */
 	localEndpoint?: string;
+	/** Global-only shortcut used to toggle recording without hold-to-talk */
+	toggleShortcut?: string;
 }
 
 export interface LoadedVoiceConfig {
@@ -59,6 +61,7 @@ export const DEFAULT_CONFIG: VoiceConfig = {
 	backend: undefined, // undefined = "deepgram" (default)
 	localModel: undefined,
 	localEndpoint: undefined,
+	toggleShortcut: "ctrl+shift+v",
 	onboarding: {
 		completed: false,
 		schemaVersion: VOICE_CONFIG_VERSION,
@@ -115,6 +118,9 @@ function migrateConfig(rawVoice: any, source: VoiceConfigSource): VoiceConfig {
 		backend: rawVoice.backend === "local" ? "local" : undefined,
 		localModel: typeof rawVoice.localModel === "string" ? rawVoice.localModel : undefined,
 		localEndpoint: typeof rawVoice.localEndpoint === "string" ? rawVoice.localEndpoint : undefined,
+		toggleShortcut: source !== "project" && typeof rawVoice.toggleShortcut === "string"
+			? rawVoice.toggleShortcut
+			: DEFAULT_CONFIG.toggleShortcut,
 		onboarding: normalizeOnboarding(rawVoice.onboarding, fallbackCompleted),
 	};
 }
@@ -149,6 +155,41 @@ export function loadConfigWithSource(cwd: string, options: ConfigPathOptions = {
 		globalSettingsPath,
 		projectSettingsPath,
 	};
+}
+
+const VALID_MODIFIERS = new Set(["ctrl", "shift", "alt", "meta", "cmd", "super"]);
+const SHORTCUT_PATTERN = /^[a-z0-9+]+$/;
+
+/** Validate a shortcut string like "ctrl+shift+v". Returns true if structurally valid. */
+export function isValidShortcut(shortcut: string): boolean {
+	if (typeof shortcut !== "string" || shortcut.length === 0 || !SHORTCUT_PATTERN.test(shortcut)) return false;
+	const parts = shortcut.split("+");
+	if (parts.length < 1 || parts.length > 4) return false;
+	const key = parts[parts.length - 1]!;
+	if (key.length === 0) return false;
+	const mods = parts.slice(0, -1);
+	return mods.every((m) => VALID_MODIFIERS.has(m));
+}
+
+/**
+ * Resolve the toggle shortcut from global config at startup.
+ * Returns the validated shortcut or the default if invalid/missing.
+ * Reads disk once — caller should cache the result.
+ */
+export function loadGlobalToggleShortcut(options: ConfigPathOptions = {}): string {
+	const fallback = DEFAULT_CONFIG.toggleShortcut || "ctrl+shift+v";
+	try {
+		const globalSettingsPath = getGlobalSettingsPath(options);
+		const globalVoice = readJsonFile(globalSettingsPath)[SETTINGS_KEY];
+		if (globalVoice && typeof globalVoice === "object" && typeof (globalVoice as any).toggleShortcut === "string") {
+			const candidate = (globalVoice as any).toggleShortcut;
+			if (isValidShortcut(candidate)) return candidate;
+			process.stderr.write(`[pi-voice] Warning: invalid toggleShortcut "${candidate}" in settings, using default "${fallback}"\n`);
+		}
+	} catch {
+		// Fall through to default
+	}
+	return fallback;
 }
 
 /** Check if a URL points to a loopback address (localhost/127.0.0.1/::1). */
@@ -191,6 +232,8 @@ function serializeConfig(config: VoiceConfig, scope: VoiceSettingsScope): VoiceC
 		localEndpoint: (scope === "project" && config.localEndpoint && !isLoopbackEndpoint(config.localEndpoint))
 			? undefined
 			: config.localEndpoint,
+		// Shortcut registration is static at extension load time — project-scoped overrides cannot apply
+		toggleShortcut: scope === "project" ? undefined : config.toggleShortcut,
 		onboarding: {
 			...config.onboarding,
 			schemaVersion: VOICE_CONFIG_VERSION,

@@ -52,7 +52,7 @@
  *
  * Activation:
  *   - Hold SPACE (≥1200ms) → release to finalize
- *   - Ctrl+Shift+V → toggle start/stop (always works)
+ *   - Configurable shortcut (default Ctrl+Shift+V) → toggle start/stop (always works)
 
  *
  * Config in ~/.pi/agent/settings.json under "voice": { ... }
@@ -73,6 +73,7 @@ import {
 	DEFAULT_CONFIG,
 	getSessionStartPersistedConfig,
 	loadConfigWithSource,
+	loadGlobalToggleShortcut,
 	saveConfig,
 	type VoiceConfig,
 	type VoiceSettingsScope,
@@ -623,6 +624,13 @@ export default function (pi: ExtensionAPI) {
 	let recordingStart = 0;
 	let statusTimer: ReturnType<typeof setInterval> | null = null;
 	let terminalInputUnsub: (() => void) | null = null;
+
+	// ─── Toggle Shortcut (resolved once at startup, used everywhere) ──────
+	const resolvedToggleShortcut = loadGlobalToggleShortcut();
+	const toggleShortcutLabel = resolvedToggleShortcut
+		.split("+")
+		.map((p) => p.length <= 1 ? p.toUpperCase() : p[0]!.toUpperCase() + p.slice(1))
+		.join("+");
 
 	// Streaming session state
 	let activeSession: VoiceSession | null = null;
@@ -1755,7 +1763,7 @@ export default function (pi: ExtensionAPI) {
 
 	// ─── Shortcuts ───────────────────────────────────────────────────────────
 
-	pi.registerShortcut("ctrl+shift+v", {
+	pi.registerShortcut(resolvedToggleShortcut as any, {
 		description: "Toggle voice recording (start/stop)",
 		handler: async (handlerCtx) => {
 			ctx = handlerCtx;
@@ -1764,7 +1772,7 @@ export default function (pi: ExtensionAPI) {
 				return;
 			}
 			if (dictationMode) {
-				// Ctrl+Shift+V stops dictation mode
+				// The configured toggle shortcut stops dictation mode
 				dictationMode = false;
 				if (voiceState === "recording") {
 					await stopVoiceRecording();
@@ -1830,7 +1838,7 @@ export default function (pi: ExtensionAPI) {
 						"pi-listen ready!",
 						"",
 						"  Hold SPACE to record → release to transcribe",
-						"  Ctrl+Shift+V to toggle recording",
+						`  ${toggleShortcutLabel} to toggle recording`,
 						`  Backend: ${backendLabel}`,
 						`  Audio: ${audioTool ? `${audioTool.name}` : "NONE — install sox or ffmpeg"}`,
 						"",
@@ -1903,7 +1911,7 @@ export default function (pi: ExtensionAPI) {
 					backendInfo,
 					"",
 					"  Hold SPACE → release to transcribe",
-					"  Ctrl+Shift+V → toggle recording on/off",
+					`  ${toggleShortcutLabel} → toggle recording on/off`,
 					"  Quick SPACE tap → types a space (no voice)",
 					"  Escape × 2 → clear editor",
 					"",
@@ -1967,7 +1975,7 @@ export default function (pi: ExtensionAPI) {
 						"",
 						"  Speak freely — no need to hold SPACE.",
 						"  /voice stop → finalize and stop",
-						"  Ctrl+Shift+V → also stops dictation",
+						`  ${toggleShortcutLabel} → also stops dictation`,
 					].join("\n"), "info");
 				} else {
 					dictationMode = false;
@@ -2027,6 +2035,7 @@ export default function (pi: ExtensionAPI) {
 				lines.push(`    language:          ${config.language}`);
 				lines.push(`    onboarding:        ${config.onboarding.completed ? "complete" : "incomplete"}`);
 				lines.push(`    hold threshold:    ${HOLD_THRESHOLD_MS}ms`);
+				lines.push(`    toggle shortcut:   ${resolvedToggleShortcut}`);
 				lines.push(`    kitty protocol:    ${kittyReleaseDetected ? "detected" : "not detected"}`);
 				lines.push(`    state:             ${voiceState}`);
 
@@ -2128,7 +2137,7 @@ export default function (pi: ExtensionAPI) {
 						lines.push("    Or any OpenAI-compatible transcription server");
 					} else {
 						lines.push("  All checks passed — voice is ready!");
-						lines.push("  Hold SPACE to record, or use Ctrl+Shift+V to toggle.");
+						lines.push(`  Hold SPACE to record, or use ${toggleShortcutLabel} to toggle.`);
 					}
 				} else if (isLocal) {
 					// In-process sherpa-onnx mode — no server needed
@@ -2139,7 +2148,7 @@ export default function (pi: ExtensionAPI) {
 						lines.push("    apt install sox        # Linux");
 					} else {
 						lines.push("  All checks passed — voice is ready (in-process sherpa-onnx)!");
-						lines.push("  Hold SPACE to record, or use Ctrl+Shift+V to toggle.");
+						lines.push(`  Hold SPACE to record, or use ${toggleShortcutLabel} to toggle.`);
 					}
 				} else {
 					ready = !!dgKey && !!tool;
@@ -2157,7 +2166,7 @@ export default function (pi: ExtensionAPI) {
 						lines.push("    choco install sox      # Windows");
 					} else {
 						lines.push("  All checks passed — voice is ready!");
-						lines.push("  Hold SPACE to record, or use Ctrl+Shift+V to toggle.");
+						lines.push(`  Hold SPACE to record, or use ${toggleShortcutLabel} to toggle.`);
 					}
 				}
 

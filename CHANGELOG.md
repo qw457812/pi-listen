@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [5.0.7] - 2026-04-03
+
+### Added
+- **Configurable voice toggle shortcut** — the toggle shortcut (default
+  `Ctrl+Shift+V`) can now be customized via `toggleShortcut` in global
+  `~/.pi/agent/settings.json` under the `"voice"` key. Project-scoped overrides
+  are intentionally ignored since Pi registers shortcuts statically at load time.
+- **Shortcut validation** — invalid shortcut values are rejected with a warning
+  and fall back to the default `ctrl+shift+v`. Validation requires modifier+key
+  format (e.g. `ctrl+shift+v`, `alt+r`, `meta+shift+m`).
+- **Debug output** — `/voice debug` now shows the configured toggle shortcut.
+
+### Fixed
+- **Pi API compatibility: session events** — `session_start` now uses per-event
+  `event.reason` detection for new Pi API. Non-startup transitions trigger
+  `voiceCleanup()` and sherpa recognizer cache clear before re-initialization.
+  Legacy `session_switch` handler preserved for backward compatibility with older
+  Pi versions.
+- No auth API changes needed — pi-voice does not make direct LLM calls via
+  `ModelRegistry`.
 ## [5.0.5] - 2026-03-26
 
 ### Fixed
