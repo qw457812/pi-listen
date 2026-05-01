@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [7.2.1] - 2026-05-01
+
+### Fixed
+
+- **Streaming auto-speak (was: TTS played AFTER full response).**
+  The previous `turn_end` handler waited for the full agent response
+  before speaking — felt laggy on long answers. Replaced with
+  `message_update` + `message_end` subscription:
+  - `message_update` fires per token batch as the LLM streams. We
+    extract the accumulated text, find new sentence boundaries,
+    and queue any complete sentence(s) for synthesis immediately.
+  - `message_end` flushes the trailing partial sentence.
+  - Per-message stream state map (keyed by message id) tracks the
+    `spokenLen` cursor so concurrent messages (compaction, sub-turns)
+    don't cross-talk.
+  - Per-message serialized `pending` chain ensures sentences play
+    in order, never overlapping.
+  - Legacy `turn_end` handler kept as fallback for Pi versions
+    without `message_update`; gated by stream-state to avoid
+    double-speaking.
+  Result: the first sentence of an agent response starts playing
+  within ~1 s of the LLM emitting it, instead of after the entire
+  turn completes.
+
 ## [7.2.0] - 2026-05-01
 
 World-class voice UX: end-to-end TTS streaming via stdin pipe, sub-cell

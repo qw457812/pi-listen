@@ -2258,47 +2258,151 @@ export default function (pi: ExtensionAPI) {
 	pi.on("agent_start", async () => { agentBusy = true; });
 	pi.on("agent_end", async () => { agentBusy = false; });
 
-	pi.on("turn_end", async (event, _evtCtx) => {
-		if (!config.ttsEnabled || !config.ttsAutoSpeak) return;
-		const message = event?.message;
-		if (!message || message.role !== "assistant") return;
-		// Don't auto-speak while STT is hot — feedback loop hazard.
-		if (voiceState === "warmup" || voiceState === "recording" || voiceState === "finalizing") return;
+	// v7.2.1 — streaming auto-speak. Instead of waiting for `turn_end`
+	// (which only fires AFTER the full response is generated), subscribe
+	// to `message_update` and `message_end`:
+	//   - message_update fires as the LLM streams tokens. We extract
+	//     the accumulated text, find new sentence boundaries since
+	//     the last speak, and queue those sentences for synthesis.
+	//   - message_end flushes any remaining buffer (one final speak
+	//     for trailing text without a sentence terminator).
+	// Result: TTS starts speaking the FIRST sentence within ~1 second
+	// of the agent producing it, instead of after the entire response
+	// completes. Sentence chunking + pipelined synth (already in
+	// speak.ts) keeps audio flowing continuously.
+	//
+	// Per-message tracking: each assistant message has its own
+	// `spokenLen` cursor so concurrent messages (compaction, sub-turns)
+	// don't cross-talk. Map keyed by message id.
 
-		// Rate limit: drop turn_end events that arrive within the cooldown.
-		const now = Date.now();
-		if (now - lastAutoSpeakAt < AUTO_SPEAK_RATE_LIMIT_MS) return;
+	interface MessageStreamState {
+		spokenLen: number;          // chars of accumulated text already queued for speech
+		pending: Promise<void>;     // chain of in-flight speak() calls — serialize per message
+	}
+	const messageStreams = new Map<string, MessageStreamState>();
 
-		// Extract text content. AssistantMessage.content is an array of
-		// TextContent | ThinkingContent | ToolCall. We only speak the
-		// plain text — thinking blocks are internal, tool calls are
-		// machine-readable.
-		const text = (message.content as any[])
+	const SENTENCE_TERMINATORS = /[.!?](?=\s|$)|[\n]{1,}/g;
+
+	function extractAccumulatedText(message: any): string {
+		if (!message || !Array.isArray(message.content)) return "";
+		return (message.content as any[])
 			.filter(c => c?.type === "text" && typeof c.text === "string")
 			.map(c => c.text as string)
-			.join(" ")
-			.trim();
-		if (!text) return;
+			.join("");
+	}
 
+	/** Detect last sentence boundary at or before `maxIdx` in `text`.
+	 *  Returns the index AFTER the terminator (so [0..idx] is a complete
+	 *  block). Returns -1 if none found. */
+	function lastSentenceEnd(text: string, fromIdx: number): number {
+		let lastEnd = -1;
+		const re = /[.!?](?=\s|$)|\n+/g;
+		let m: RegExpExecArray | null;
+		while ((m = re.exec(text)) !== null) {
+			const end = m.index + m[0].length;
+			if (end > fromIdx) lastEnd = end;
+		}
+		return lastEnd;
+	}
+
+	async function maybeSpeakNew(messageId: string, fullText: string, isFinal: boolean): Promise<void> {
+		if (!config.ttsEnabled || !config.ttsAutoSpeak) return;
+		// Don't speak while STT is hot — feedback loop hazard.
+		if (voiceState === "warmup" || voiceState === "recording" || voiceState === "finalizing") return;
+		if (!fullText) return;
+
+		let state = messageStreams.get(messageId);
+		if (!state) {
+			state = { spokenLen: 0, pending: Promise.resolve() };
+			messageStreams.set(messageId, state);
+		}
+
+		const newText = fullText.slice(state.spokenLen);
+		if (!newText) return;
+
+		let speakUpTo: number;
+		if (isFinal) {
+			// Flush everything remaining.
+			speakUpTo = newText.length;
+		} else {
+			// Only speak up to the last complete sentence boundary in
+			// the new text. Partial sentence stays in the buffer.
+			const boundary = lastSentenceEnd(newText, 0);
+			if (boundary <= 0) return; // no complete sentence yet
+			speakUpTo = boundary;
+		}
+
+		const chunk = newText.slice(0, speakUpTo).trim();
+		state.spokenLen += speakUpTo;
+		if (!chunk) return;
+
+		// Strip code blocks / links / emojis / abbreviations to spoken form.
 		const { prepareForSpeech } = await import("./voice/tts-text-filter");
-		const prepared = prepareForSpeech(text, {
+		const prepared = prepareForSpeech(chunk, {
 			maxChars: 2000,
 			stripCodeBlocks: true,
 			collapseLinks: true,
 		});
-		if (prepared.skipped) return;
+		if (prepared.skipped || !prepared.text.trim()) return;
 
-		lastAutoSpeakAt = now;
-		// runSpeak handles abort-on-active and the model-install-on-demand
-		// flow. We pass forceEnabled=false so it respects ttsEnabled (which
-		// we already checked above — extra safety for races where the flag
-		// flips between this check and runSpeak's own check).
-		try {
-			if (ctx) await runSpeak(ctx, prepared.text);
-		} catch {
-			// Auto-speak failures are non-blocking; the user already saw
-			// the agent's text response. Errors surface in /voice-speak-info.
+		// Serialize per-message: chain onto pending so chunks play in
+		// order, never overlapping for the same message.
+		const text = prepared.text;
+		state.pending = state.pending.then(async () => {
+			try {
+				if (ctx) await runSpeak(ctx, text);
+			} catch {
+				// Auto-speak failures are non-blocking.
+			}
+		});
+	}
+
+	pi.on("message_update", async (event) => {
+		const msg = (event as any)?.message;
+		if (!msg || msg.role !== "assistant") return;
+		const id = (msg.id as string) || "current";
+		const fullText = extractAccumulatedText(msg);
+		await maybeSpeakNew(id, fullText, false);
+	});
+
+	pi.on("message_end", async (event) => {
+		const msg = (event as any)?.message;
+		if (!msg || msg.role !== "assistant") return;
+		const id = (msg.id as string) || "current";
+		const fullText = extractAccumulatedText(msg);
+		await maybeSpeakNew(id, fullText, true);
+		// Drop the stream state once flushed — prevents unbounded growth.
+		const state = messageStreams.get(id);
+		if (state) {
+			state.pending.finally(() => {
+				if (messageStreams.get(id) === state) messageStreams.delete(id);
+			});
 		}
+	});
+
+	// Legacy turn_end fallback — only relevant on Pi versions that
+	// don't fire message_update yet. Tracked via lastAutoSpeakAt so
+	// it doesn't double-speak when message_update already covered the
+	// content.
+	pi.on("turn_end", async (event, _evtCtx) => {
+		if (!config.ttsEnabled || !config.ttsAutoSpeak) return;
+		const message = (event as any)?.message;
+		if (!message || message.role !== "assistant") return;
+		const id = (message.id as string) || "current";
+		// If message_update already drained this message's stream
+		// state, the streaming path handled it — skip.
+		const state = messageStreams.get(id);
+		if (state) return;
+		if (voiceState === "warmup" || voiceState === "recording" || voiceState === "finalizing") return;
+		const now = Date.now();
+		if (now - lastAutoSpeakAt < AUTO_SPEAK_RATE_LIMIT_MS) return;
+		const text = extractAccumulatedText(message).trim();
+		if (!text) return;
+		const { prepareForSpeech } = await import("./voice/tts-text-filter");
+		const prepared = prepareForSpeech(text, { maxChars: 2000, stripCodeBlocks: true, collapseLinks: true });
+		if (prepared.skipped) return;
+		lastAutoSpeakAt = now;
+		try { if (ctx) await runSpeak(ctx, prepared.text); } catch { /* non-blocking */ }
 	});
 
 	// ─── /voice command ──────────────────────────────────────────────────────
