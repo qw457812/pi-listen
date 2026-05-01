@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [7.2.2] - 2026-05-01
+
+### Added
+
+- **Eager-speak clause-boundary fallback** — when streaming buffered
+  text grows past 80 chars without a sentence terminator (`.!?\n`),
+  speak up to the last clause boundary (`,` `;` `:` `—`). Long
+  rhetorical sentences no longer block playback waiting for a period.
+- **Streaming diagnostic logging** — every `message_update` and
+  `message_end` event appends to `/tmp/pi-listen-stream.log` so users
+  can verify Pi's emission cadence (token-by-token vs end-only) when
+  debugging perceived TTS latency.
+
 ## [7.2.1] - 2026-05-01
 
 ### Fixed

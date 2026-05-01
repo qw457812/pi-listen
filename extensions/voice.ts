@@ -2305,6 +2305,24 @@ export default function (pi: ExtensionAPI) {
 		return lastEnd;
 	}
 
+	// Eager-speak threshold — if the buffered new text grows past this
+	// many chars without a sentence terminator (e.g. very long
+	// sentence mid-stream), speak what we have at the next clause
+	// boundary (`,` `;` ` — `) or flush as-is. Keeps latency low for
+	// long-winded responses.
+	const EAGER_SPEAK_CHARS = 80;
+	const EAGER_CLAUSE_RE = /[,;:—](?=\s)/g;
+
+	function lastClauseEnd(text: string): number {
+		let last = -1;
+		EAGER_CLAUSE_RE.lastIndex = 0;
+		let m: RegExpExecArray | null;
+		while ((m = EAGER_CLAUSE_RE.exec(text)) !== null) {
+			last = m.index + m[0].length;
+		}
+		return last;
+	}
+
 	async function maybeSpeakNew(messageId: string, fullText: string, isFinal: boolean): Promise<void> {
 		if (!config.ttsEnabled || !config.ttsAutoSpeak) return;
 		// Don't speak while STT is hot — feedback loop hazard.
@@ -2325,16 +2343,24 @@ export default function (pi: ExtensionAPI) {
 			// Flush everything remaining.
 			speakUpTo = newText.length;
 		} else {
-			// Only speak up to the last complete sentence boundary in
-			// the new text. Partial sentence stays in the buffer.
+			// Prefer sentence boundary; fall back to clause boundary
+			// if we've buffered > EAGER_SPEAK_CHARS without one.
 			const boundary = lastSentenceEnd(newText, 0);
-			if (boundary <= 0) return; // no complete sentence yet
-			speakUpTo = boundary;
+			if (boundary > 0) {
+				speakUpTo = boundary;
+			} else if (newText.length >= EAGER_SPEAK_CHARS) {
+				const clause = lastClauseEnd(newText);
+				if (clause <= 0) return; // not even a clause yet — wait
+				speakUpTo = clause;
+			} else {
+				return; // wait for more text
+			}
 		}
 
 		const chunk = newText.slice(0, speakUpTo).trim();
 		state.spokenLen += speakUpTo;
 		if (!chunk) return;
+		voiceDebug("autoSpeak.streaming", { id: messageId, chars: chunk.length, isFinal });
 
 		// Strip code blocks / links / emojis / abbreviations to spoken form.
 		const { prepareForSpeech } = await import("./voice/tts-text-filter");
@@ -2357,11 +2383,25 @@ export default function (pi: ExtensionAPI) {
 		});
 	}
 
+	// Diagnostic: stream log shows when message_update / message_end
+	// actually fire (some Pi versions don't emit message_update
+	// per-token). Lets us verify the streaming path is alive.
+	const streamDiag = (s: string) => {
+		try {
+			const fs2 = require("node:fs") as typeof import("node:fs");
+			fs2.appendFileSync("/tmp/pi-listen-stream.log", `[${new Date().toISOString()}] ${s}\n`);
+		} catch { /* best-effort */ }
+	};
+	let mu_count = 0;
 	pi.on("message_update", async (event) => {
 		const msg = (event as any)?.message;
 		if (!msg || msg.role !== "assistant") return;
 		const id = (msg.id as string) || "current";
 		const fullText = extractAccumulatedText(msg);
+		mu_count++;
+		if (mu_count <= 5 || mu_count % 10 === 0) {
+			streamDiag(`message_update #${mu_count} id=${id} chars=${fullText.length}`);
+		}
 		await maybeSpeakNew(id, fullText, false);
 	});
 
@@ -2370,6 +2410,8 @@ export default function (pi: ExtensionAPI) {
 		if (!msg || msg.role !== "assistant") return;
 		const id = (msg.id as string) || "current";
 		const fullText = extractAccumulatedText(msg);
+		streamDiag(`message_end id=${id} chars=${fullText.length} updates_seen=${mu_count}`);
+		mu_count = 0;
 		await maybeSpeakNew(id, fullText, true);
 		// Drop the stream state once flushed — prevents unbounded growth.
 		const state = messageStreams.get(id);
