@@ -2452,6 +2452,22 @@ export default function (pi: ExtensionAPI) {
 
 	pi.registerCommand("voice", {
 		description: "Voice: /voice [on|off|stop|dictate|history|test|info|setup]",
+		getArgumentCompletions(argumentPrefix: string) {
+			const subcommands = [
+				{ value: "on", label: "on", description: "Enable voice input" },
+				{ value: "off", label: "off", description: "Disable voice input" },
+				{ value: "stop", label: "stop", description: "Stop recording or dictation" },
+				{ value: "dictate", label: "dictate", description: "Continuous dictation mode" },
+				{ value: "history", label: "history", description: "Show recent transcriptions" },
+				{ value: "test", label: "test", description: "Run voice diagnostics" },
+				{ value: "language", label: "language", description: "Change recognition language" },
+				{ value: "info", label: "info", description: "Show current configuration" },
+				{ value: "setup", label: "setup", description: "Run voice setup wizard" },
+			];
+			const prefix = argumentPrefix.trim().toLowerCase();
+			if (!prefix) return subcommands;
+			return subcommands.filter(c => c.value.startsWith(prefix));
+		},
 		handler: async (args, cmdCtx) => {
 			ctx = cmdCtx;
 			const sub = (args || "").trim().toLowerCase();
@@ -3216,6 +3232,15 @@ export default function (pi: ExtensionAPI) {
 	// path returns a complete WAV.
 	pi.registerCommand("voice-stream", {
 		description: "Toggle Deepgram WebSocket streaming TTS (cloud)",
+		getArgumentCompletions(argumentPrefix: string) {
+			const opts = [
+				{ value: "on", label: "on", description: "Enable WebSocket streaming" },
+				{ value: "off", label: "off", description: "Disable WebSocket streaming" },
+			];
+			const prefix = argumentPrefix.trim().toLowerCase();
+			if (!prefix) return opts;
+			return opts.filter(c => c.value.startsWith(prefix));
+		},
 		handler: async (args, cmdCtx) => {
 			ctx = cmdCtx;
 			const trimmed = (args || "").trim().toLowerCase();
@@ -3254,6 +3279,15 @@ export default function (pi: ExtensionAPI) {
 	// directly to the agent instead of just placing it in the editor).
 	pi.registerCommand("voice-autosubmit", {
 		description: "Toggle auto-submit on STT — sends spoken text to the agent immediately",
+		getArgumentCompletions(argumentPrefix: string) {
+			const opts = [
+				{ value: "on", label: "on", description: "Auto-send transcribed text" },
+				{ value: "off", label: "off", description: "Place text in editor only" },
+			];
+			const prefix = argumentPrefix.trim().toLowerCase();
+			if (!prefix) return opts;
+			return opts.filter(c => c.value.startsWith(prefix));
+		},
 		handler: async (args, cmdCtx) => {
 			ctx = cmdCtx;
 			const trimmed = (args || "").trim().toLowerCase();
