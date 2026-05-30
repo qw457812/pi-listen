@@ -2017,8 +2017,9 @@ export default function (pi: ExtensionAPI) {
 					return { consume: true };
 				}
 
-				// In idle: double-escape (two presses within 500ms) clears editor
-				if (voiceState === "idle") {
+				// In idle: double-escape (two presses within 500ms) clears editor.
+				// Disabled via doubleEscClear config.
+				if (voiceState === "idle" && config.doubleEscClear !== false) {
 					const now = Date.now();
 					if (lastEscapeTime > 0 && (now - lastEscapeTime) < 500) {
 						if (ctx?.hasUI) {
@@ -2468,7 +2469,9 @@ export default function (pi: ExtensionAPI) {
 					"  Hold SPACE → release to transcribe",
 					`  ${toggleShortcutLabel} → toggle recording on/off`,
 					"  Quick SPACE tap → types a space (no voice)",
-					"  Escape × 2 → clear editor",
+					...(config.doubleEscClear !== false
+						? ["  Escape × 2 → clear editor"]
+						: []),
 					"",
 					"  /voice-settings → open settings panel",
 					"  /voice dictate  → continuous mode (no hold)",

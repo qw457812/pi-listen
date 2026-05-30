@@ -457,6 +457,13 @@ export class VoiceSettingsPanel {
 					: this.dim("OFF — STT fills the editor (press ↵ to send)"),
 				hint: "toggle",
 			},
+			{
+				label: "Esc clear",
+				value: config.doubleEscClear !== false
+					? this.success("ON — double-Esc clears editor")
+					: this.dim("OFF — pass Esc through"),
+				hint: "toggle",
+			},
 		];
 
 		// v7.2 — left-bar cursor + dim non-selected (HIG deference).
@@ -928,6 +935,13 @@ export class VoiceSettingsPanel {
 					config.autoSubmitOnSpeak = !(config.autoSubmitOnSpeak === true);
 					this.save();
 					break;
+				case 6: // Double-ESC clear toggle
+					{
+						const current = config.doubleEscClear !== false;
+						config.doubleEscClear = !current;
+						this.save();
+						break;
+					}
 			}
 		} else if (tabId === "models") {
 			const model = this.getRowAt(this.row);
@@ -1369,7 +1383,7 @@ export class VoiceSettingsPanel {
 
 	private getRowCount(tabId: TabId): number {
 		switch (tabId) {
-			case "general": return 6;
+			case "general": return 7;
 			case "models": return this.modelSelectableIdx.length;
 			case "downloaded": {
 				const dl = this.getDownloaded().length;

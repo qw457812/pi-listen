@@ -102,6 +102,11 @@ export interface VoiceConfig {
 	 * don't re-spam the same notification. New in v7.0.0.
 	 */
 	ttsOnboardingShown?: boolean;
+	/**
+	 * When true, double-escape in idle clears the editor.
+	 * Default: true
+	 */
+	doubleEscClear?: boolean;
 }
 
 export interface LoadedVoiceConfig {
@@ -138,6 +143,7 @@ export const DEFAULT_CONFIG: VoiceConfig = {
 	ttsLanguage: undefined,
 	ttsDeepgramStreaming: false,
 	ttsOnboardingShown: false,
+	doubleEscClear: true,
 	onboarding: {
 		completed: false,
 		schemaVersion: VOICE_CONFIG_VERSION,
@@ -235,6 +241,9 @@ function migrateConfig(rawVoice: any, source: VoiceConfigSource): VoiceConfig {
 		ttsOnboardingShown: typeof rawVoice.ttsOnboardingShown === "boolean"
 			? rawVoice.ttsOnboardingShown
 			: false,
+		doubleEscClear: typeof rawVoice.doubleEscClear === "boolean"
+			? rawVoice.doubleEscClear
+			: DEFAULT_CONFIG.doubleEscClear,
 		onboarding: normalizeOnboarding(rawVoice.onboarding, fallbackCompleted),
 	};
 }
