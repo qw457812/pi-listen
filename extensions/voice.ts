@@ -2062,8 +2062,8 @@ export default function (pi: ExtensionAPI) {
 			// ── Escape key — cancel voice / double-escape clears editor ──
 			// Skip release/repeat events — only act on actual presses
 			if (matchesKey(data, "escape") && !isKeyRelease(data) && !isKeyRepeat(data)) {
-				// During recording: cancel recording and clear transcript
-				if (voiceState === "recording" || voiceState === "warmup" || voiceState === "finalizing") {
+				// During warmup/recording: cancel and discard transcript
+				if (voiceState === "warmup" || voiceState === "recording") {
 					voiceDebug("Escape pressed → canceling voice");
 					abortPreRecording();
 					if (activeSession) {
@@ -2081,6 +2081,14 @@ export default function (pi: ExtensionAPI) {
 					setVoiceState("idle");
 					lastEscapeTime = Date.now();
 					return { consume: true };
+				}
+
+				// During finalizing: let the backend finish producing the final
+				// transcript, and pass ESC through so the active input mode can
+				// handle it without discarding dictated audio/text.
+				if (voiceState === "finalizing") {
+					voiceDebug("Escape pressed during finalizing → passing through; finalization continues");
+					return undefined;
 				}
 
 				// In idle: double-escape (two presses within 500ms) clears editor.
