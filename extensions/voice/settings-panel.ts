@@ -364,7 +364,7 @@ export class VoiceSettingsPanel {
 		const { config } = this.p;
 		const sttOn = config.enabled === true;
 		const ttsOn = config.ttsEnabled === true;
-		const sttBackend = sttOn ? (config.backend === "deepgram" ? "Deepgram" : "Local") : "off";
+		const sttBackend = sttOn ? (config.backend === "volcengine" ? "VolcEngine" : config.backend === "local" ? "Local" : "Deepgram") : "off";
 		const ttsBackend = ttsOn ? ((config.ttsBackend ?? "local") === "deepgram" ? "Deepgram" : "Local") : "off";
 		const lang = config.ttsLanguage || config.language || "en";
 		const sttBadge = sttOn ? this.success(`${ICON.bulletActive} STT`) : this.dim(`${ICON.bulletInactive} STT`);
@@ -416,11 +416,13 @@ export class VoiceSettingsPanel {
 				label: "Backend",
 				value: isLocal
 					? this.success("Local (offline, batch)")
-					: this.accent("Deepgram (cloud, live streaming)"),
+					: config.backend === "volcengine"
+						? this.accent("VolcEngine (cloud, live streaming)")
+						: this.accent("Deepgram (cloud, live streaming)"),
 				hint: "toggle",
 			},
 			{
-				label: isLocal ? "Model" : "API Key",
+				label: isLocal ? "Model" : config.backend === "volcengine" ? "Credentials" : "API Key",
 				value: isLocal
 					? (LOCAL_MODELS.find(m => m.id === config.localModel)?.name || config.localModel || "—")
 					: (() => {
@@ -908,11 +910,11 @@ export class VoiceSettingsPanel {
 		if (tabId === "general") {
 			const { config } = this.p;
 			switch (this.row) {
-				case 0: // Backend toggle
-					config.backend = config.backend === "local" ? "deepgram" : "local";
+				case 0: // Backend toggle — cycle: deepgram → volcengine → local
+					config.backend = config.backend === "local" ? "deepgram" : config.backend === "volcengine" ? "local" : "volcengine";
 					this.save();
 					break;
-				case 1: // Model (local) or API Key (deepgram)
+				case 1: // Model (local) or API Key (deepgram/volcengine)
 					if (config.backend === "local") {
 						this.tab = 1;
 						this.row = 0;

@@ -90,6 +90,11 @@ import {
 	getLanguagesForLocalModel, isLanguageSupportedByModel, localLanguageDisplayName,
 	type LocalSession,
 } from "./voice/local";
+import {
+	startVolcEngineSession, stopVolcEngineSession, abortVolcEngineSession,
+	isVolcEngineReady,
+	type VolcEngineSession,
+} from "./voice/volcengine";
 
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -321,7 +326,7 @@ interface StreamingSession {
 }
 
 /** Union of session types — Deepgram streaming or local batch */
-type VoiceSession = StreamingSession | LocalSession;
+type VoiceSession = StreamingSession | LocalSession | VolcEngineSession;
 
 function startStreamingSession(
 	config: VoiceConfig,
@@ -617,6 +622,10 @@ function abortSession(session: VoiceSession | null): void {
 		abortLocalSession(session);
 		return;
 	}
+	if (session.backend === "volcengine") {
+		abortVolcEngineSession(session);
+		return;
+	}
 	session.closed = true;
 	if (session.staleSessionTimer) {
 		clearTimeout(session.staleSessionTimer);
@@ -678,7 +687,7 @@ export default function (pi: ExtensionAPI) {
 
 	// Streaming session state
 	let activeSession: VoiceSession | null = null;
-	let preRecordingSession: StreamingSession | null = null;  // Started during warmup, promoted on confirm (Deepgram only)
+	let preRecordingSession: StreamingSession | VolcEngineSession | null = null;  // Started during warmup, promoted on confirm (cloud backends only)
 
 	let lastStopTime = 0;    // For Escape-to-clear-editor within 30s of recording
 	let lastEscapeTime = 0;  // For double-escape to clear editor
@@ -752,7 +761,7 @@ export default function (pi: ExtensionAPI) {
 					ctx.ui.setStatus("voice", undefined);
 					break;
 				}
-				const modeTag = !config.onboarding.completed ? "SETUP" : config.backend === "local" ? "LOCAL" : "STREAM";
+				const modeTag = !config.onboarding.completed ? "SETUP" : config.backend === "local" ? "LOCAL" : config.backend === "volcengine" ? "VOLC" : "STREAM";
 				ctx.ui.setStatus("voice", `MIC ${modeTag}`);
 				break;
 			}
@@ -889,15 +898,22 @@ export default function (pi: ExtensionAPI) {
 		source: "first-run" | "setup-command",
 	) {
 		const isLocal = nextConfig.backend === "local";
-		const hasKey = !!resolveDeepgramApiKey(nextConfig);
-		// Local backend is always valid (sherpa handles everything). Deepgram needs API key.
-		const validated = isLocal || hasKey;
+		const isVolc = nextConfig.backend === "volcengine";
+		const hasDeepgramKey = !!resolveDeepgramApiKey(nextConfig);
+		const hasVolcCreds = isVolcEngineReady(nextConfig);
+		// Local backend is always valid. Deepgram needs API key. VolcEngine needs credentials.
+		const validated = isLocal || (isVolc && hasVolcCreds) || (!isVolc && hasDeepgramKey);
 		config = finalizeOnboardingConfig(nextConfig, { validated, source });
 		configSource = selectedScope;
 		const savedPath = saveConfig(config, selectedScope, currentCwd);
-		const statusHeader = validated
-			? "Voice setup complete."
-			: "Voice setup saved, but DEEPGRAM_API_KEY is still required.";
+		let statusHeader: string;
+		if (validated) {
+			statusHeader = "Voice setup complete.";
+		} else if (isVolc) {
+			statusHeader = "Voice setup saved, but VolcEngine credentials are still required. Set VOLC_API_KEY (new console) or VOLC_APP_KEY + VOLC_ACCESS_KEY (old console).";
+		} else {
+			statusHeader = "Voice setup saved, but DEEPGRAM_API_KEY is still required.";
+		}
 		uiCtx.ui.notify([
 			statusHeader,
 			...summaryLines,
@@ -1178,30 +1194,50 @@ export default function (pi: ExtensionAPI) {
 		abortActiveSpeak();
 		if (preRecordingSession) return; // Already started
 		if (config.backend === "local") return;      // No pre-recording for local batch mode
-		if (!resolveDeepgramApiKey(config)) return; // No key — skip silently
 		if (!detectAudioCaptureTool()) return;       // No audio tool — skip silently
 
-		voiceDebug("startPreRecording → capturing audio during warmup");
+		// Check credentials for the active cloud backend
+		const isVolc = config.backend === "volcengine";
+		if (isVolc) {
+			if (!isVolcEngineReady(config)) return;
+		} else {
+			if (!resolveDeepgramApiKey(config)) return;
+		}
 
-		const session = startStreamingSession(config, {
-			onTranscript: (interim, finals) => {
-				// During warmup, silently accumulate transcript
-				// (don't update UI — user hasn't committed to voice yet)
-				voiceDebug("preRecording transcript", { interim: interim.slice(0, 50), finals: finals.length });
-			},
-			onDone: (fullText, meta) => {
-				// Pre-recording ended (user released during warmup) — discard
-				voiceDebug("preRecording onDone (discarded)", { fullText: fullText.slice(0, 50) });
-				if (preRecordingSession === session) preRecordingSession = null;
-			},
-			onError: (err: string) => {
-				voiceDebug("preRecording onError (ignored)", { err });
-				if (preRecordingSession === session) preRecordingSession = null;
-			},
-		});
+		voiceDebug("startPreRecording → capturing audio during warmup", { backend: config.backend });
 
-		if (session) {
-			preRecordingSession = session;
+		const audioTool = detectAudioCaptureTool()!;
+
+		if (isVolc) {
+			const session = startVolcEngineSession(config, audioTool, voiceDebug, {
+				onTranscript: (interim, finals) => {
+					voiceDebug("preRecording transcript (volc)", { interim: interim.slice(0, 50), finals: finals.length });
+				},
+				onDone: (fullText, meta) => {
+					voiceDebug("preRecording onDone (volc, discarded)", { fullText: fullText.slice(0, 50) });
+					if (preRecordingSession === session) preRecordingSession = null;
+				},
+				onError: (err: string) => {
+					voiceDebug("preRecording onError (volc, ignored)", { err });
+					if (preRecordingSession === session) preRecordingSession = null;
+				},
+			});
+			if (session) preRecordingSession = session;
+		} else {
+			const session = startStreamingSession(config, {
+				onTranscript: (interim, finals) => {
+					voiceDebug("preRecording transcript", { interim: interim.slice(0, 50), finals: finals.length });
+				},
+				onDone: (fullText, meta) => {
+					voiceDebug("preRecording onDone (discarded)", { fullText: fullText.slice(0, 50) });
+					if (preRecordingSession === session) preRecordingSession = null;
+				},
+				onError: (err: string) => {
+					voiceDebug("preRecording onError (ignored)", { err });
+					if (preRecordingSession === session) preRecordingSession = null;
+				},
+			});
+			if (session) preRecordingSession = session;
 		}
 	}
 
@@ -1377,7 +1413,7 @@ export default function (pi: ExtensionAPI) {
 			},
 		};
 
-		// ── Promote pre-recording, start local, or start streaming ──
+		// ── Promote pre-recording, start local, start volcengine, or start deepgram streaming ──
 		let session: VoiceSession | null;
 
 		if (config.backend === "local") {
@@ -1401,6 +1437,34 @@ export default function (pi: ExtensionAPI) {
 			recProc.stdout?.on("data", (chunk: Buffer) => {
 				updateAudioLevel(chunk);
 			});
+		} else if (config.backend === "volcengine") {
+			// VolcEngine backend: bidirectional streaming ASR
+			if (preRecordingSession && preRecordingSession.backend === "volcengine") {
+				// Promote pre-recording session
+				voiceDebug("Promoting VolcEngine pre-recording session to active");
+				session = preRecordingSession;
+				preRecordingSession = null;
+				session.onTranscript = recordingCallbacks.onTranscript;
+				session.onDone = recordingCallbacks.onDone;
+				session.onError = recordingCallbacks.onError;
+				session.onAudioData = updateAudioLevel;
+				if (session.finalizedParts.length > 0 || session.interimText) {
+					updateLiveTranscriptWidget(session.interimText, session.finalizedParts);
+				}
+			} else {
+				const audioTool = detectAudioCaptureTool();
+				if (!audioTool) {
+					recordingCallbacks.onError("No audio capture tool found. Install one of: sox, ffmpeg, or arecord (Linux)");
+					resetHoldState();
+					setVoiceState("idle");
+					return false;
+				}
+				voiceDebug("Starting VolcEngine streaming session");
+				session = startVolcEngineSession(config, audioTool, voiceDebug, {
+					...recordingCallbacks,
+					onAudioData: updateAudioLevel,
+				});
+			}
 		} else if (preRecordingSession) {
 			// Promote: swap callbacks so pre-recorded audio feeds into real UI
 			voiceDebug("Promoting pre-recording session to active");
@@ -1476,6 +1540,8 @@ export default function (pi: ExtensionAPI) {
 				const modelName = LOCAL_MODELS.find(m => m.id === (config.localModel || "whisper-small"))?.name || config.localModel || "local model";
 				ctx?.ui.notify(`Transcribing with ${modelName}…`, "info");
 				await stopLocalSession(activeSession, config);
+			} else if (activeSession.backend === "volcengine") {
+				stopVolcEngineSession(activeSession);
 			} else {
 				stopStreamingSession(activeSession);
 			}
@@ -2145,11 +2211,10 @@ export default function (pi: ExtensionAPI) {
 		// Try migration if a backend is already configured.
 		const hasKey = !!resolveDeepgramApiKey(config);
 		const hasLocalModel = config.backend === "local" && !!config.localModel;
+		const hasVolcCreds = config.backend === "volcengine" && isVolcEngineReady(config);
 		const audioTool = detectAudioCaptureTool();
-		if (hasKey || hasLocalModel) {
-			// Backend configured (Deepgram key or local model) — auto-activate.
-			// Migration runs every transition; the welcome notification is gated
-			// on isStartup so /new and /resume don't re-spam the hint.
+		if (hasKey || hasLocalModel || hasVolcCreds) {
+			// Backend configured — auto-activate.
 			config.onboarding.completed = true;
 			config.onboarding.completedAt = new Date().toISOString();
 			config.onboarding.source = "migration";
@@ -2163,7 +2228,9 @@ export default function (pi: ExtensionAPI) {
 			if (!isStartup) return;
 			const backendLabel = hasLocalModel
 				? `Local model: ${LOCAL_MODELS.find(m => m.id === config.localModel)?.name || config.localModel} (offline, batch mode)`
-				: "Deepgram Nova-3 (cloud, live streaming)";
+				: hasVolcCreds
+					? "VolcEngine Seed ASR 2.0 (cloud, live streaming)"
+					: "Deepgram Nova-3 (cloud, live streaming)";
 			const lines = [
 				"pi-listen ready!",
 				"",
@@ -2183,8 +2250,9 @@ export default function (pi: ExtensionAPI) {
 		const lines = [
 			"pi-listen installed — voice input for Pi",
 			"",
-			"  Two backends available:",
+			"  Three backends available:",
 			"  • Deepgram — cloud, live streaming, $200 free credit (6–12 months of use)",
+			"  • VolcEngine — cloud, Doubao ASR, best for Chinese, no VPN needed",
 			"  • Local models — fully offline, no API key, auto-downloads on first use",
 			"",
 			`  Audio capture: ${audioTool ? `${audioTool.name} ✓` : "not found — install sox or ffmpeg"}`,
@@ -2582,13 +2650,14 @@ export default function (pi: ExtensionAPI) {
 			if (sub === "test") {
 				cmdCtx.ui.notify("Testing voice setup…", "info");
 				const isLocal = config.backend === "local";
+				const isVolc = config.backend === "volcengine";
 				const dgKey = resolveDeepgramApiKey(config);
 				const tool = detectAudioCaptureTool();
 
 				const lines = [
 					"Voice diagnostics:",
 					"",
-					`  Backend: ${isLocal ? "local" : "deepgram"}`,
+					`  Backend: ${isLocal ? "local" : isVolc ? "volcengine" : "deepgram"}`,
 					"",
 					"  Audio capture:",
 					`    tool:              ${tool ? `${tool.name} (${tool.cmd})` : "NONE FOUND"}`,
@@ -2601,6 +2670,15 @@ export default function (pi: ExtensionAPI) {
 				if (isLocal) {
 					lines.push(`    local model:       ${config.localModel || "whisper-small"}`);
 					lines.push(`    local endpoint:    ${config.localEndpoint || DEFAULT_LOCAL_ENDPOINT}`);
+				} else if (isVolc) {
+					const volcReady = isVolcEngineReady(config);
+					const volcApiKey = process.env.VOLC_API_KEY || config.volcApiKey || "";
+					const volcAppKey = process.env.VOLC_APP_KEY || config.volcAppKey || "";
+					const volcAccessKey = process.env.VOLC_ACCESS_KEY || config.volcAccessKey || "";
+					lines.push(`    VOLC_API_KEY:      ${volcApiKey ? "set" : "NOT SET"}`);
+					lines.push(`    VOLC_APP_KEY:      ${volcAppKey ? "set" : "NOT SET"}`);
+					lines.push(`    VOLC_ACCESS_KEY:   ${volcAccessKey ? "set" : "NOT SET"}`);
+					lines.push(`    volc ready:        ${volcReady ? "yes" : "no"}`);
 				} else {
 					lines.push(`    DEEPGRAM_API_KEY:  ${dgKey ? "set (" + dgKey.slice(0, 8) + "…)" : "NOT SET"}`);
 				}
@@ -2674,6 +2752,10 @@ export default function (pi: ExtensionAPI) {
 					} catch (e: any) {
 						lines.push(`    sherpa-onnx:       NOT AVAILABLE — ${e?.message || e}`);
 					}
+				} else if (isVolc) {
+					// VolcEngine credentials are checked locally. A live ASR request can be
+					// tested with scripts/test-volcengine.ts to avoid spending quota here.
+					lines.push(`    VolcEngine API:    ${isVolcEngineReady(config) ? "configured (not live-validated)" : "NOT CONFIGURED"}`);
 				} else if (dgKey) {
 					// Deepgram API key validation
 					try {
@@ -2722,6 +2804,25 @@ export default function (pi: ExtensionAPI) {
 						lines.push("    apt install sox        # Linux");
 					} else {
 						lines.push("  All checks passed — voice is ready (in-process sherpa-onnx)!");
+						lines.push(`  Hold SPACE to record, or use ${toggleShortcutLabel} to toggle.`);
+					}
+				} else if (isVolc) {
+					const volcReady = isVolcEngineReady(config);
+					ready = volcReady && !!tool;
+					if (!volcReady) {
+						lines.push("  Setup needed:");
+						lines.push("    1. Get a VolcEngine key → https://console.volcengine.com/speech/new/setting/apikeys?projectName=default");
+						lines.push("    2. export VOLC_API_KEY=\"your-key\" (new console)");
+						lines.push("    3. Or export VOLC_APP_KEY=... and VOLC_ACCESS_KEY=... (old console)");
+					} else if (!tool) {
+						lines.push("  Setup needed — install any one of:");
+						lines.push("    brew install sox       # macOS (recommended)");
+						lines.push("    brew install ffmpeg    # macOS (alternative)");
+						lines.push("    apt install sox        # Linux");
+						lines.push("    apt install ffmpeg     # Linux (alternative)");
+						lines.push("    choco install sox      # Windows");
+					} else {
+						lines.push("  All checks passed — VolcEngine voice is ready!");
 						lines.push(`  Hold SPACE to record, or use ${toggleShortcutLabel} to toggle.`);
 					}
 				} else {
@@ -2836,7 +2937,14 @@ export default function (pi: ExtensionAPI) {
 			formatDeviceSummary,
 			saveConfig: (cfg: VoiceConfig, scope: VoiceSettingsScope, cwd: string) => saveConfig(cfg, scope, cwd),
 			clearRecognizerCache: () => { try { clearRecognizerCache(); } catch {} },
-			resolveApiKey: () => resolveDeepgramApiKey(config) ?? undefined,
+			resolveApiKey: () => {
+				if (config.backend === "volcengine") {
+					return isVolcEngineReady(config)
+						? (process.env.VOLC_API_KEY || config.volcApiKey || "volc-app+access")
+						: undefined;
+				}
+				return resolveDeepgramApiKey(config) ?? undefined;
+			},
 			deepgramLanguages: LANGUAGES.map(l => ({ name: l.name, code: l.code, popular: l.popular })),
 		};
 

@@ -21,7 +21,7 @@ export interface VoiceOnboardingState {
 	skippedAt?: string;
 }
 
-export type VoiceBackend = "deepgram" | "local";
+export type VoiceBackend = "deepgram" | "local" | "volcengine";
 
 export interface VoiceConfig {
 	version: number;
@@ -31,12 +31,26 @@ export interface VoiceConfig {
 	onboarding: VoiceOnboardingState;
 	/** Deepgram API key — stored in config so it's available even when env var isn't set */
 	deepgramApiKey?: string;
-	/** Transcription backend — "deepgram" (cloud streaming) or "local" (batch via local server) */
+	/** Transcription backend — "deepgram" (cloud streaming), "local" (batch via local server), or "volcengine" (Doubao Bytedance Seed ASR) */
 	backend?: VoiceBackend;
 	/** Local model ID (e.g. "whisper-small", "whisper-turbo", "parakeet-v3") */
 	localModel?: string;
 	/** Local transcription server URL (default: http://localhost:8080) */
 	localEndpoint?: string;
+
+	// ─── VolcEngine (Doubao) STT ────────────────────────────────────
+	// Opt-in cloud STT backend for Chinese users — no VPN needed.
+
+	/** VolcEngine API Key — new console (also settable via VOLC_API_KEY env var). Takes priority over volcAppKey + volcAccessKey. */
+	volcApiKey?: string;
+	/** VolcEngine APP ID — old console (also settable via VOLC_APP_KEY env var). */
+	volcAppKey?: string;
+	/** VolcEngine Access Token — old console (also settable via VOLC_ACCESS_KEY env var). */
+	volcAccessKey?: string;
+	/** VolcEngine model version — "1.0" or "2.0" (default: "2.0" = Seed ASR 2.0). */
+	volcModelVersion?: "1.0" | "2.0";
+	/** Enable semantic smoothing (DDC / disfluency detection) — removes filler words. Default: true. */
+	volcEnableDdc?: boolean;
 	/** Global-only shortcut used to toggle recording without hold-to-talk */
 	toggleShortcut?: string;
 
@@ -129,6 +143,12 @@ export const DEFAULT_CONFIG: VoiceConfig = {
 	backend: undefined, // undefined = "deepgram" (default)
 	localModel: undefined,
 	localEndpoint: undefined,
+	// VolcEngine defaults — opt-in
+	volcApiKey: undefined,
+	volcAppKey: undefined,
+	volcAccessKey: undefined,
+	volcModelVersion: "2.0",
+	volcEnableDdc: true,
 	toggleShortcut: "ctrl+shift+v",
 	// TTS defaults — all opt-in
 	ttsEnabled: false,
@@ -197,9 +217,22 @@ function migrateConfig(rawVoice: any, source: VoiceConfigSource): VoiceConfig {
 		language: typeof rawVoice.language === "string" ? rawVoice.language : DEFAULT_CONFIG.language,
 		scope: (rawVoice.scope as VoiceSettingsScope | undefined) ?? (source === "project" ? "project" : "global"),
 		deepgramApiKey: typeof rawVoice.deepgramApiKey === "string" ? rawVoice.deepgramApiKey : undefined,
-		backend: rawVoice.backend === "local" ? "local" : undefined,
+		backend: rawVoice.backend === "local" ? "local" : rawVoice.backend === "volcengine" ? "volcengine" : undefined,
 		localModel: typeof rawVoice.localModel === "string" ? rawVoice.localModel : undefined,
 		localEndpoint: typeof rawVoice.localEndpoint === "string" ? rawVoice.localEndpoint : undefined,
+		// VolcEngine fields — type-validated
+		volcApiKey: typeof rawVoice.volcApiKey === "string" && rawVoice.volcApiKey ? rawVoice.volcApiKey : undefined,
+		volcAppKey: typeof rawVoice.volcAppKey === "string" && rawVoice.volcAppKey ? rawVoice.volcAppKey : undefined,
+		volcAccessKey: typeof rawVoice.volcAccessKey === "string" && rawVoice.volcAccessKey ? rawVoice.volcAccessKey : undefined,
+		volcModelVersion: (() => {
+			const v = rawVoice.volcModelVersion;
+			if (v === "1.0" || v === "2.0") return v as "1.0" | "2.0";
+			if (typeof v === "string" && v) {
+				console.warn(`pi-listen: unknown volcModelVersion "${v}", defaulting to "2.0". Supported: "1.0", "2.0".`);
+			}
+			return "2.0" as const;
+		})(),
+		volcEnableDdc: typeof rawVoice.volcEnableDdc === "boolean" ? rawVoice.volcEnableDdc : DEFAULT_CONFIG.volcEnableDdc,
 		toggleShortcut: source !== "project" && typeof rawVoice.toggleShortcut === "string"
 			? rawVoice.toggleShortcut
 			: DEFAULT_CONFIG.toggleShortcut,
@@ -351,6 +384,10 @@ function serializeConfig(config: VoiceConfig, scope: VoiceSettingsScope): VoiceC
 		scope,
 		// Never persist API keys into project-scoped config — prevents accidental repo commits
 		deepgramApiKey: scope === "project" ? undefined : config.deepgramApiKey,
+		// VolcEngine credentials — same protection as Deepgram key
+		volcApiKey: scope === "project" ? undefined : config.volcApiKey,
+		volcAppKey: scope === "project" ? undefined : config.volcAppKey,
+		volcAccessKey: scope === "project" ? undefined : config.volcAccessKey,
 		// Only allow loopback endpoints in project config — prevents mic audio exfiltration
 		localEndpoint: (scope === "project" && config.localEndpoint && !isLoopbackEndpoint(config.localEndpoint))
 			? undefined

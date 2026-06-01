@@ -454,11 +454,12 @@ export async function runVoiceOnboarding(
 		"Choose transcription backend:",
 		[
 			"Deepgram — cloud, live streaming as you speak, $200 free credit",
+			"VolcEngine — cloud, Doubao ASR, best for Chinese, no VPN needed",
 			"Local model — fully offline, no API key, transcribes after recording",
 		],
 	);
 	if (!backendChoice) return undefined;
-	const selectedBackend: VoiceBackend = backendChoice.includes("Local") ? "local" : "deepgram";
+	const selectedBackend: VoiceBackend = backendChoice.includes("Local") ? "local" : backendChoice.includes("VolcEngine") ? "volcengine" : "deepgram";
 
 	let localModel = currentConfig.localModel;
 	let localEndpoint: string | undefined = currentConfig.localEndpoint;
@@ -525,8 +526,90 @@ export async function runVoiceOnboarding(
 			localModel = picked.id;
 			localEndpoint = undefined;
 		}
+	} else if (selectedBackend === "volcengine") {
+		// ─── VolcEngine backend setup ─────────────────────────
+		const hasVolcCreds = Boolean(
+			process.env.VOLC_API_KEY ||
+			currentConfig.volcApiKey ||
+			((process.env.VOLC_APP_KEY || currentConfig.volcAppKey) &&
+				(process.env.VOLC_ACCESS_KEY || currentConfig.volcAccessKey)),
+		);
+
+		if (!hasVolcCreds) {
+			const keyAction = await ctx.ui.select(
+				"VolcEngine credentials not found. What would you like to do?",
+				[
+					"Paste VOLC_API_KEY now (new console)",
+					"I'll set it up later (export VOLC_API_KEY=..., or VOLC_APP_KEY + VOLC_ACCESS_KEY)",
+				],
+			);
+			if (!keyAction) return undefined;
+
+			if (keyAction.startsWith("Paste")) {
+				ctx.ui.notify(
+					[
+						"Get your VolcEngine / Doubao ASR API key:",
+						"  → https://console.volcengine.com/speech/new/setting/apikeys?projectName=default",
+						"",
+						"Paste VOLC_API_KEY below:",
+					].join("\n"),
+					"info",
+				);
+				const apiKey = await ctx.ui.input("VOLC_API_KEY");
+				if (apiKey && apiKey.trim().length > 5) {
+					const trimmedKey = apiKey.trim();
+
+					if (trimmedKey.includes("\n") || trimmedKey.includes("\r")) {
+						ctx.ui.notify("Key contains newlines — rejected for safety.", "error");
+					} else {
+						const fs = await import("node:fs");
+						const os = await import("node:os");
+						const home = os.homedir();
+						const envSecretsPath = `${home}/.env.secrets`;
+						const zshrcPath = `${home}/.zshrc`;
+						const exportLine = `export VOLC_API_KEY='${shellEscapeSingleQuoted(trimmedKey)}'`;
+
+						const targetFile = fs.existsSync(envSecretsPath) ? envSecretsPath : zshrcPath;
+						const existing = fs.existsSync(targetFile) ? fs.readFileSync(targetFile, "utf-8") : "";
+						const isNewFile = !fs.existsSync(targetFile);
+
+						if (existing.includes("VOLC_API_KEY")) {
+							const updated = existing.replace(/^export VOLC_API_KEY=.*$/m, exportLine);
+							fs.writeFileSync(targetFile, updated, { mode: 0o600 });
+						} else {
+							fs.appendFileSync(targetFile, `\n${exportLine}\n`);
+						}
+						if (isNewFile) {
+							try { fs.chmodSync(targetFile, 0o600); } catch {}
+						}
+
+						process.env.VOLC_API_KEY = trimmedKey;
+
+						ctx.ui.notify(
+							`VOLC_API_KEY saved to ${targetFile}\nActive in this session. New terminals will pick it up automatically.`,
+							"info",
+						);
+					}
+				} else if (apiKey !== undefined && apiKey !== null) {
+					ctx.ui.notify(
+						"Key looks too short — skipped. You can set it later:\n  export VOLC_API_KEY=\"your-key\"",
+						"warning",
+					);
+				}
+			} else {
+				ctx.ui.notify(
+					[
+						"No problem! When you're ready:",
+						"  1. Get a key → https://console.volcengine.com/speech/new/setting/apikeys?projectName=default",
+						"  2. Run: export VOLC_API_KEY=\"your-key\"",
+						"  3. Old console also works: export VOLC_APP_KEY=... and VOLC_ACCESS_KEY=...",
+					].join("\n"),
+					"info",
+				);
+			}
+		}
 	} else {
-		// ─── Deepgram backend setup (unchanged logic) ────────
+		// ─── Deepgram backend setup ────────────────────────────
 		const hasDeepgramKey = Boolean(process.env.DEEPGRAM_API_KEY || currentConfig.deepgramApiKey);
 
 		if (!hasDeepgramKey) {
@@ -651,7 +734,9 @@ export async function runVoiceOnboarding(
 	const selectedModel = LOCAL_MODELS.find(m => m.id === localModel);
 	const backendLabel = selectedBackend === "local"
 		? `Local — ${selectedModel?.name || localModel}${localEndpoint ? ` at ${localEndpoint}` : " (in-process)"}`
-		: "Deepgram Nova-3 (streaming)";
+		: selectedBackend === "volcengine"
+			? "VolcEngine Seed ASR 2.0 (streaming)"
+			: "Deepgram Nova-3 (streaming)";
 
 	const summaryLines = [
 		`Backend: ${backendLabel}`,
@@ -659,6 +744,11 @@ export async function runVoiceOnboarding(
 		`Scope: ${selectedScope}`,
 		...(selectedBackend === "deepgram"
 			? [`API key: ${process.env.DEEPGRAM_API_KEY ? "configured" : "not yet set"}`]
+			: []),
+		...(selectedBackend === "volcengine"
+			? [
+				`VolcEngine: ${process.env.VOLC_API_KEY || (process.env.VOLC_APP_KEY && process.env.VOLC_ACCESS_KEY) ? "credentials in env" : "credentials needed (set VOLC_API_KEY for new console)"}`,
+			]
 			: []),
 	];
 
