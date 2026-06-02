@@ -755,18 +755,19 @@ export default function (pi: ExtensionAPI) {
 
 	function updateVoiceStatus() {
 		if (!ctx?.hasUI) return;
+		const theme = ctx.ui.theme;
 		switch (voiceState) {
 			case "idle": {
 				if (!config.enabled) {
 					ctx.ui.setStatus("voice", undefined);
 					break;
 				}
-				const modeTag = !config.onboarding.completed ? "SETUP" : config.backend === "local" ? "LOCAL" : config.backend === "volcengine" ? "VOLC" : "STREAM";
-				ctx.ui.setStatus("voice", `MIC ${modeTag}`);
+				const modeTag = !config.onboarding.completed ? "SETUP" : config.backend === "local" ? "LOCAL" : "STREAM";
+				ctx.ui.setStatus("voice", theme.fg("dim", `MIC ${modeTag}`));
 				break;
 			}
 			case "warmup":
-				ctx.ui.setStatus("voice", "MIC HOLD...");
+				ctx.ui.setStatus("voice", theme.fg("warning", "MIC HOLD..."));
 				break;
 			case "recording": {
 				const secs = Math.round((Date.now() - recordingStart) / 1000);
@@ -774,12 +775,12 @@ export default function (pi: ExtensionAPI) {
 				const meterLen = 4;
 				const meterFilled = Math.round(audioLevelSmoothed * meterLen);
 				const meter = "█".repeat(meterFilled) + "░".repeat(meterLen - meterFilled);
-				ctx.ui.setStatus("voice", `REC ${secs}s ${meter}`);
+				ctx.ui.setStatus("voice", theme.fg("accent", `REC ${secs}s ${meter}`));
 				break;
 			}
 			case "finalizing":
 				if (config.backend === "local") {
-					ctx.ui.setStatus("voice", "STT...");
+					ctx.ui.setStatus("voice", theme.fg("muted", "STT..."));
 				} else {
 					// Don't show "STT..." — live transcript handles it
 					ctx.ui.setStatus("voice", "");
